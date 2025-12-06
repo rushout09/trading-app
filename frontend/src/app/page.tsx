@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { authApi, watchlistApi } from '@/lib/api';
@@ -11,7 +11,17 @@ import AddSymbolModal from '@/components/AddSymbolModal';
 import Toolbar from '@/components/Toolbar';
 import LoginPage from '@/components/LoginPage';
 
-export default function Home() {
+// Loading component
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-sheet-bg">
+      <div className="text-sheet-text-muted">Loading...</div>
+    </div>
+  );
+}
+
+// Main app content - separated to use useSearchParams inside Suspense
+function HomeContent() {
   const searchParams = useSearchParams();
   
   // Authentication state
@@ -183,11 +193,7 @@ export default function Home() {
 
   // Show loading while checking auth
   if (isAuthenticated === null) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-sheet-bg">
-        <div className="text-sheet-text-muted">Loading...</div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   // Show login page if not authenticated
@@ -262,5 +268,14 @@ export default function Home() {
         existingSymbols={existingSymbols}
       />
     </div>
+  );
+}
+
+// Main page component with Suspense boundary
+export default function Home() {
+  return (
+    <Suspense fallback={<LoadingScreen />}>
+      <HomeContent />
+    </Suspense>
   );
 }
