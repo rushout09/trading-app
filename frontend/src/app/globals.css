@@ -1,0 +1,95 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'JetBrains Mono', monospace;
+  background-color: #1e1e1e;
+  color: #cccccc;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3e3e42;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4e4e52;
+}
+
+/* Excel-like cell focus */
+.cell-focus {
+  outline: 2px solid #0e639c;
+  outline-offset: -2px;
+}
+
+/* Blinking cursor for live data */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0.7; }
+}
+
+.live-indicator {
+  animation: blink 1s infinite;
+}
+
+/* Tab styling */
+.tab {
+  position: relative;
+}
+
+.tab::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: #3e3e42;
+}
+
+.tab.active::after {
+  background: transparent;
+}
+
+/* Number formatting */
+.number-cell {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Positive/Negative colors */
+.positive {
+  color: #4ec9b0;
+}
+
+.negative {
+  color: #f14c4c;
+}
+
+/* Sort indicator */
+.sort-indicator {
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.sort-indicator.active {
+  opacity: 1;
+}
+
