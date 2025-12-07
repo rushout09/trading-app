@@ -15,7 +15,14 @@ interface SearchResult {
   symbol: string;
   exchange: string;
   name: string;
+  instrument_type?: string;
+  category?: 'equity' | 'future' | 'option';
+  expiry?: string | null;
+  strike?: number | null;
+  lot_size?: number | null;
 }
+
+type SegmentFilter = 'all' | 'equity' | 'futures' | 'options';
 
 export default function AddSymbolModal({
   isOpen,
@@ -28,6 +35,7 @@ export default function AddSymbolModal({
   const [isLoading, setIsLoading] = useState(false);
   const [manualSymbol, setManualSymbol] = useState('');
   const [manualExchange, setManualExchange] = useState('NSE');
+  const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>('all');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -44,7 +52,9 @@ export default function AddSymbolModal({
       }
 
       setIsLoading(true);
-      const response = await stockApi.search(query);
+      const response = await stockApi.search(query, {
+        segment: segmentFilter === 'all' ? undefined : segmentFilter,
+      });
       setIsLoading(false);
 
       if (response.data?.results) {
@@ -54,7 +64,7 @@ export default function AddSymbolModal({
 
     const debounce = setTimeout(searchStocks, 300);
     return () => clearTimeout(debounce);
-  }, [query]);
+  }, [query, segmentFilter]);
 
   const handleAdd = (symbol: string, exchange: string) => {
     const key = `${exchange}:${symbol}`;
@@ -105,9 +115,26 @@ export default function AddSymbolModal({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search stocks..."
+              placeholder="Search stocks, futures, options..."
               className="w-full pl-10 pr-4 py-2 bg-sheet-row border border-sheet-border rounded-lg text-sheet-text placeholder:text-sheet-text-muted focus:outline-none focus:border-blue-500"
             />
+          </div>
+
+          {/* Segment Filter Tabs */}
+          <div className="flex gap-1 mt-3 p-1 bg-sheet-row rounded-lg">
+            {(['all', 'equity', 'futures', 'options'] as SegmentFilter[]).map((seg) => (
+              <button
+                key={seg}
+                onClick={() => setSegmentFilter(seg)}
+                className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                  segmentFilter === seg
+                    ? 'bg-blue-600 text-white'
+                    : 'text-sheet-text-muted hover:text-sheet-text'
+                }`}
+              >
+                {seg.charAt(0).toUpperCase() + seg.slice(1)}
+              </button>
+            ))}
           </div>
 
           {/* Search Results */}
@@ -122,6 +149,26 @@ export default function AddSymbolModal({
                   const key = `${result.exchange}:${result.symbol}`;
                   const isAdded = existingSymbols.has(key);
 
+                  // Format expiry date
+                  const formatExpiry = (expiry: string | null | undefined) => {
+                    if (!expiry) return '';
+                    try {
+                      const date = new Date(expiry);
+                      return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
+                    } catch {
+                      return expiry;
+                    }
+                  };
+
+                  // Get category badge color
+                  const getCategoryColor = (category?: string) => {
+                    switch (category) {
+                      case 'future': return 'bg-amber-500/20 text-amber-400';
+                      case 'option': return 'bg-purple-500/20 text-purple-400';
+                      default: return 'bg-green-500/20 text-green-400';
+                    }
+                  };
+
                   return (
                     <div
                       key={key}
@@ -132,18 +179,29 @@ export default function AddSymbolModal({
                       }`}
                       onClick={() => !isAdded && handleAdd(result.symbol, result.exchange)}
                     >
-                      <div>
-                        <div className="font-semibold text-blue-400">
-                          {result.symbol}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-blue-400 truncate">
+                            {result.symbol}
+                          </span>
+                          {result.category && (
+                            <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${getCategoryColor(result.category)}`}>
+                              {result.category === 'future' ? 'FUT' : result.category === 'option' ? result.instrument_type : 'EQ'}
+                            </span>
+                          )}
                         </div>
-                        <div className="text-xs text-sheet-text-muted">
-                          {result.exchange} • {result.name}
+                        <div className="text-xs text-sheet-text-muted flex flex-wrap gap-x-2">
+                          <span>{result.exchange}</span>
+                          {result.name && <span>• {result.name}</span>}
+                          {result.expiry && <span>• Exp: {formatExpiry(result.expiry)}</span>}
+                          {result.strike && <span>• Strike: {result.strike}</span>}
+                          {result.lot_size && <span>• Lot: {result.lot_size}</span>}
                         </div>
                       </div>
                       {isAdded ? (
-                        <span className="text-xs text-sheet-text-muted">Added</span>
+                        <span className="text-xs text-sheet-text-muted ml-2">Added</span>
                       ) : (
-                        <Plus size={18} className="text-sheet-text-muted" />
+                        <Plus size={18} className="text-sheet-text-muted ml-2 flex-shrink-0" />
                       )}
                     </div>
                   );
@@ -167,10 +225,20 @@ export default function AddSymbolModal({
                 onChange={(e) => setManualExchange(e.target.value)}
                 className="px-3 py-2 bg-sheet-row border border-sheet-border rounded-lg text-sheet-text focus:outline-none focus:border-blue-500"
               >
-                <option value="NSE">NSE</option>
-                <option value="BSE">BSE</option>
-                <option value="NFO">NFO</option>
-                <option value="MCX">MCX</option>
+                <optgroup label="Equity">
+                  <option value="NSE">NSE</option>
+                  <option value="BSE">BSE</option>
+                </optgroup>
+                <optgroup label="F&O">
+                  <option value="NFO">NFO (NSE F&O)</option>
+                  <option value="BFO">BFO (BSE F&O)</option>
+                </optgroup>
+                <optgroup label="Commodities">
+                  <option value="MCX">MCX</option>
+                </optgroup>
+                <optgroup label="Currency">
+                  <option value="CDS">CDS (Currency)</option>
+                </optgroup>
               </select>
               <input
                 type="text"
@@ -179,7 +247,13 @@ export default function AddSymbolModal({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') handleManualAdd();
                 }}
-                placeholder="Symbol (e.g., RELIANCE)"
+                placeholder={
+                  manualExchange === 'NFO' || manualExchange === 'BFO'
+                    ? 'e.g., NIFTY24DEC19500CE'
+                    : manualExchange === 'MCX'
+                    ? 'e.g., CRUDEOIL24DECFUT'
+                    : 'e.g., RELIANCE'
+                }
                 className="flex-1 px-3 py-2 bg-sheet-row border border-sheet-border rounded-lg text-sheet-text placeholder:text-sheet-text-muted focus:outline-none focus:border-blue-500"
               />
               <button

@@ -642,28 +642,115 @@ async def get_stock_data(exchange: str, symbol: str):
 
 
 @app.get("/api/stocks/search")
-async def search_stocks(q: str = Query(..., min_length=1)):
-    """Search for stocks by symbol."""
+async def search_stocks(
+    q: str = Query(..., min_length=1),
+    exchange: Optional[str] = Query(default=None, description="Filter by exchange (NSE, BSE, NFO, MCX, BFO, CDS)"),
+    segment: Optional[str] = Query(default=None, description="Filter by segment type (equity, futures, options, all)")
+):
+    """
+    Search for instruments by symbol.
+    
+    - **q**: Search query (symbol name)
+    - **exchange**: Optional exchange filter (NSE, BSE, NFO, MCX, BFO, CDS)
+    - **segment**: Optional segment filter:
+        - `equity`: Only stocks (NSE, BSE)
+        - `futures`: Only futures (NFO, MCX, BFO, CDS)
+        - `options`: Only options (NFO, BFO)
+        - `all` or None: Search all segments
+    """
     if not kite_manager.is_authenticated():
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        kite_manager.load_instruments("NSE")
+        # Determine which exchanges to search based on filters
+        all_exchanges = ["NSE", "BSE", "NFO", "MCX", "BFO", "CDS"]
+        equity_exchanges = ["NSE", "BSE"]
+        derivatives_exchanges = ["NFO", "MCX", "BFO", "CDS"]
+        
+        if exchange:
+            exchanges_to_search = [exchange.upper()]
+        elif segment:
+            segment = segment.lower()
+            if segment == "equity":
+                exchanges_to_search = equity_exchanges
+            elif segment == "futures":
+                exchanges_to_search = derivatives_exchanges
+            elif segment == "options":
+                exchanges_to_search = ["NFO", "BFO"]
+            else:
+                exchanges_to_search = all_exchanges
+        else:
+            exchanges_to_search = all_exchanges
+        
+        # Load instruments for required exchanges
+        for ex in exchanges_to_search:
+            try:
+                kite_manager.load_instruments(ex)
+            except Exception as e:
+                log.warning(f"Could not load instruments for {ex}: {e}")
         
         results = []
-        for key, inst in instruments_cache.items():
-            if isinstance(key, str) and key.startswith("NSE:"):
-                if q.upper() in inst.get('tradingsymbol', ''):
-                    results.append({
-                        "symbol": inst['tradingsymbol'],
-                        "exchange": "NSE",
-                        "name": inst.get('name', inst['tradingsymbol'])
-                    })
-                    if len(results) >= 10:
-                        break
+        query_upper = q.upper()
         
-        return {"results": results}
+        for key, inst in instruments_cache.items():
+            if not isinstance(key, str) or key.startswith("_loaded_"):
+                continue
+            
+            # Check if this instrument is from an exchange we're searching
+            inst_exchange = key.split(":")[0] if ":" in key else None
+            if inst_exchange not in exchanges_to_search:
+                continue
+            
+            tradingsymbol = inst.get('tradingsymbol', '')
+            
+            # Match query against symbol
+            if query_upper in tradingsymbol:
+                # Determine instrument type
+                instrument_type = inst.get('instrument_type', '')
+                segment_type = inst.get('segment', '')
+                
+                # Categorize the instrument
+                if instrument_type in ['CE', 'PE']:
+                    category = 'option'
+                elif instrument_type == 'FUT':
+                    category = 'future'
+                else:
+                    category = 'equity'
+                
+                # Apply segment filter if specified
+                if segment:
+                    segment_lower = segment.lower()
+                    if segment_lower == "equity" and category != "equity":
+                        continue
+                    if segment_lower == "futures" and category != "future":
+                        continue
+                    if segment_lower == "options" and category != "option":
+                        continue
+                
+                results.append({
+                    "symbol": tradingsymbol,
+                    "exchange": inst_exchange,
+                    "name": inst.get('name', tradingsymbol),
+                    "instrument_type": instrument_type,
+                    "category": category,
+                    "expiry": str(inst.get('expiry', '')) if inst.get('expiry') else None,
+                    "strike": inst.get('strike'),
+                    "lot_size": inst.get('lot_size'),
+                })
+                
+                if len(results) >= 50:  # Increased limit for F&O
+                    break
+        
+        # Sort results: exact matches first, then by symbol length
+        results.sort(key=lambda x: (
+            0 if x['symbol'] == query_upper else 1,
+            0 if x['symbol'].startswith(query_upper) else 1,
+            len(x['symbol'])
+        ))
+        
+        return {"results": results[:50]}
     except Exception as e:
+        log.error(f"Search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

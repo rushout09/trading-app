@@ -78,8 +78,12 @@ export const watchlistApi = {
 
 // Stock APIs
 export const stockApi = {
-  search: (query: string) =>
-    fetchApi<{ results: any[] }>(`/api/stocks/search?q=${encodeURIComponent(query)}`),
+  search: (query: string, options?: { exchange?: string; segment?: string }) => {
+    const params = new URLSearchParams({ q: query });
+    if (options?.exchange) params.append('exchange', options.exchange);
+    if (options?.segment) params.append('segment', options.segment);
+    return fetchApi<{ results: any[] }>(`/api/stocks/search?${params.toString()}`);
+  },
   
   getStock: (exchange: string, symbol: string) =>
     fetchApi<{ stock: any }>(`/api/stocks/${exchange}/${symbol}`),
