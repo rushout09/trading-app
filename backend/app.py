@@ -7,6 +7,7 @@ import json
 import asyncio
 import logging
 import hashlib
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 from contextlib import asynccontextmanager
@@ -146,12 +147,123 @@ class KiteManager:
                 # Test the connection
                 self.kite.profile()
                 log.info("KiteConnect initialized and authenticated")
+                # Initialize KiteTicker for real-time data
+                self._initialize_ticker()
             except Exception as e:
                 log.warning(f"KiteConnect initialization failed: {e}")
                 self.kite = None
                 self.access_token = None
         else:
             log.warning("KiteConnect not initialized - missing credentials")
+    
+    def _initialize_ticker(self):
+        """Initialize and connect KiteTicker WebSocket."""
+        if not self.api_key or not self.access_token:
+            return
+        
+        try:
+            if self.ticker:
+                try:
+                    self.ticker.close()
+                except:
+                    pass
+            
+            self.ticker = KiteTicker(self.api_key, self.access_token)
+            
+            # Set callbacks
+            self.ticker.on_ticks = self._on_ticks
+            self.ticker.on_connect = self._on_connect
+            self.ticker.on_close = self._on_close
+            self.ticker.on_error = self._on_error
+            
+            # Connect
+            self.ticker.connect(threaded=True)
+            log.info("KiteTicker initialized and connecting...")
+        except Exception as e:
+            log.error(f"KiteTicker initialization failed: {e}")
+            self.ticker = None
+    
+    def _on_ticks(self, ws, ticks):
+        """Handle incoming ticks from KiteTicker."""
+        for tick in ticks:
+            token = tick.get('instrument_token')
+            if token:
+                self.latest_ticks[token] = tick
+                # Update token to symbol mapping
+                if token not in self.token_to_symbol:
+                    # Try to find symbol from cache
+                    for key, inst in instruments_cache.items():
+                        if isinstance(key, int) and key == token:
+                            exchange = inst.get('exchange', '')
+                            symbol = inst.get('tradingsymbol', '')
+                            if exchange and symbol:
+                                self.token_to_symbol[token] = f"{exchange}:{symbol}"
+                                break
+    
+    def _on_connect(self, ws, response):
+        """Handle KiteTicker connection."""
+        self.is_connected = True
+        log.info("KiteTicker connected")
+        # Resubscribe to existing tokens
+        self._resubscribe_all()
+    
+    def _on_close(self, ws, code, reason):
+        """Handle KiteTicker disconnection."""
+        self.is_connected = False
+        log.warning(f"KiteTicker disconnected: {code} - {reason}")
+    
+    def _on_error(self, ws, code, reason):
+        """Handle KiteTicker errors."""
+        log.error(f"KiteTicker error: {code} - {reason}")
+    
+    def _resubscribe_all(self):
+        """Resubscribe to all instruments in watchlists."""
+        if not self.ticker or not self.is_connected:
+            return
+        
+        # Collect all tokens from watchlists
+        tokens_to_subscribe = set()
+        for wl in watchlists.values():
+            for item in wl.get("symbols", []):
+                try:
+                    token = self.get_instrument_token(item["exchange"], item["symbol"])
+                    if token:
+                        tokens_to_subscribe.add(token)
+                        # Update mapping
+                        self.token_to_symbol[token] = f"{item['exchange']}:{item['symbol']}"
+                except Exception as e:
+                    log.warning(f"Could not get token for {item}: {e}")
+        
+        if tokens_to_subscribe:
+            # Unsubscribe from old tokens
+            tokens_to_unsubscribe = self.subscribed_tokens - tokens_to_subscribe
+            if tokens_to_unsubscribe:
+                try:
+                    self.ticker.unsubscribe(list(tokens_to_unsubscribe))
+                    log.info(f"Unsubscribed from {len(tokens_to_unsubscribe)} tokens")
+                except Exception as e:
+                    log.error(f"Error unsubscribing: {e}")
+            
+            # Subscribe to new tokens
+            tokens_to_add = tokens_to_subscribe - self.subscribed_tokens
+            if tokens_to_add:
+                try:
+                    self.ticker.subscribe(list(tokens_to_add))
+                    self.subscribed_tokens.update(tokens_to_add)
+                    log.info(f"Subscribed to {len(tokens_to_add)} tokens. Total: {len(self.subscribed_tokens)}")
+                except Exception as e:
+                    log.error(f"Error subscribing: {e}")
+    
+    def update_subscriptions(self):
+        """Update KiteTicker subscriptions based on current watchlists."""
+        if self.ticker and self.is_connected:
+            self._resubscribe_all()
+        elif self.ticker and not self.is_connected:
+            # Try to reconnect
+            try:
+                self.ticker.connect(threaded=True)
+            except Exception as e:
+                log.error(f"Error reconnecting KiteTicker: {e}")
     
     def is_authenticated(self) -> bool:
         """Check if user is authenticated with valid access token."""
@@ -172,6 +284,11 @@ class KiteManager:
             log.info(f"Access token saved to {ENV_FILE}")
         except Exception as e:
             log.warning(f"Could not save access token to .env: {e}")
+        
+        # Update subscriptions after a short delay to ensure ticker is connected
+        def delayed_update():
+            threading.Timer(3.0, self.update_subscriptions).start()
+        delayed_update()
     
     def exchange_request_token(self, request_token: str) -> dict:
         """Exchange request token for access token."""
@@ -206,9 +323,19 @@ class KiteManager:
     
     def logout(self):
         """Clear authentication state."""
+        if self.ticker:
+            try:
+                self.ticker.close()
+            except:
+                pass
+            self.ticker = None
+        
         self.access_token = None
         self.kite = None
+        self.is_connected = False
+        self.subscribed_tokens.clear()
         self.latest_ticks.clear()
+        self.token_to_symbol.clear()
         instruments_cache.clear()
         week_52_cache.clear()
     
@@ -293,6 +420,37 @@ class KiteManager:
         
         week_52 = self.fetch_52_week_data(token)
         tick = self.latest_ticks.get(token, {})
+        
+        # If no tick data from WebSocket, try to fetch quote via REST API (fallback)
+        # Note: This is a fallback - real-time updates come from KiteTicker WebSocket
+        if not tick or not tick.get('last_price'):
+            try:
+                quote = self.kite.quote(f"{exchange}:{symbol}")
+                if quote and f"{exchange}:{symbol}" in quote:
+                    quote_data = quote[f"{exchange}:{symbol}"]
+                    # Convert quote format to tick format
+                    ohlc = quote_data.get('ohlc', {})
+                    depth = quote_data.get('depth', {})
+                    buy_orders = depth.get('buy', [])
+                    sell_orders = depth.get('sell', [])
+                    
+                    tick = {
+                        'last_price': quote_data.get('last_price'),
+                        'ohlc': {
+                            'open': ohlc.get('open'),
+                            'high': ohlc.get('high'),
+                            'low': ohlc.get('low'),
+                            'close': ohlc.get('close'),
+                        },
+                        'total_buy_quantity': buy_orders[0].get('quantity', 0) if buy_orders else 0,
+                        'total_sell_quantity': sell_orders[0].get('quantity', 0) if sell_orders else 0,
+                        'volume_traded': quote_data.get('volume'),
+                        'change': quote_data.get('net_change'),
+                    }
+                    # Cache it temporarily (will be overwritten by real-time ticks)
+                    self.latest_ticks[token] = tick
+            except Exception as e:
+                log.debug(f"Could not fetch quote for {exchange}:{symbol}: {e}")
         
         return self._format_stock_data(exchange, symbol, token, tick, week_52)
     
@@ -403,9 +561,16 @@ manager = ConnectionManager()
 
 async def broadcast_updates():
     """Background task to broadcast updates to all connected clients."""
+    last_subscription_check = datetime.now()
+    
     while True:
         try:
             if manager.active_connections and kite_manager.is_authenticated():
+                # Ensure subscriptions are up to date (check every 10 seconds)
+                if (datetime.now() - last_subscription_check).total_seconds() > 10:
+                    kite_manager.update_subscriptions()
+                    last_subscription_check = datetime.now()
+                
                 # Collect all symbols from all watchlists
                 all_symbols = set()
                 for wl in watchlists.values():
@@ -602,6 +767,11 @@ async def add_symbol(watchlist_id: str, data: AddSymbolRequest):
     watchlists[watchlist_id]["symbols"].append(symbol_entry)
     
     save_watchlists(watchlists)  # Persist to file
+    
+    # Update KiteTicker subscriptions
+    if kite_manager.is_authenticated():
+        kite_manager.update_subscriptions()
+    
     return {"watchlist": watchlists[watchlist_id]}
 
 
@@ -621,6 +791,11 @@ async def remove_symbol(watchlist_id: str, symbol: str = Query(...), exchange: s
         raise HTTPException(status_code=404, detail="Symbol not found in watchlist")
     
     save_watchlists(watchlists)  # Persist to file
+    
+    # Update KiteTicker subscriptions
+    if kite_manager.is_authenticated():
+        kite_manager.update_subscriptions()
+    
     return {"watchlist": watchlists[watchlist_id]}
 
 
