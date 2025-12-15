@@ -156,6 +156,14 @@ class KiteManager:
         else:
             log.warning("KiteConnect not initialized - missing credentials")
     
+    def _handle_auth_error(self, error: Exception):
+        """If auth is invalid, log out so frontend can prompt login."""
+        msg = str(error)
+        if "Incorrect `api_key` or `access_token`" in msg or "TokenException" in msg:
+            log.warning("Access token invalid/expired. Logging out.")
+            self.logout()
+            raise ValueError("Not authenticated")
+    
     def _initialize_ticker(self):
         """Initialize and connect KiteTicker WebSocket."""
         if not self.api_key or not self.access_token:
@@ -406,6 +414,7 @@ class KiteManager:
             return result
             
         except Exception as e:
+            self._handle_auth_error(e)
             log.error(f"Error fetching historical data: {e}")
             return {"high": None, "low": None}
     
@@ -450,6 +459,7 @@ class KiteManager:
                     # Cache it temporarily (will be overwritten by real-time ticks)
                     self.latest_ticks[token] = tick
             except Exception as e:
+                self._handle_auth_error(e)
                 log.debug(f"Could not fetch quote for {exchange}:{symbol}: {e}")
         
         return self._format_stock_data(exchange, symbol, token, tick, week_52)
